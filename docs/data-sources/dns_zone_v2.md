@@ -62,3 +62,18 @@ In addition to all arguments above, the following attributes are exported:
 * `pool_id` - The ID of the pool hosting the zone.
 
 * `project_id` - The project ID that owns the zone.
+
+* `dnssec` - Whether DNSSEC is enabled for a public zone (`ENABLE` or `DISABLE`).
+
+* `dnssec_infos` - DNSSEC key material of a signed public zone. Empty unless `dnssec` is `ENABLE`.
+  * `key_tag` - Key tag of the KSK.
+  * `flag` - DNSKEY flags (`257` for a KSK).
+  * `digest_algorithm` - Digest algorithm name (e.g. `SHA256`).
+  * `digest_type` - Digest algorithm number (e.g. `2`).
+  * `digest` - Digest of the KSK.
+  * `signature` - Signing algorithm name (e.g. `ECDSAP256SHA256`).
+  * `signature_type` - Signing algorithm number (e.g. `13`).
+  * `ksk_public_key` - Base64 public key of the KSK.
+  * `ds_record` - Complete DS record to publish at the registrar.
+  * `created_at` - Time DNSSEC was enabled.
+  * `updated_at` - Time the DNSSEC configuration was last updated.

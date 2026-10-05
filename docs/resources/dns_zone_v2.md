@@ -34,6 +34,22 @@ resource "opentelekomcloud_dns_zone_v2" "public_example_com" {
 }
 ```
 
+### Public Zone with DNSSEC
+
+```hcl
+resource "opentelekomcloud_dns_zone_v2" "signed_example_com" {
+  name   = "signed.example.com."
+  email  = "public@example.com"
+  type   = "public"
+  dnssec = "ENABLE"
+}
+
+# Publish this DS record at the domain registrar to complete the chain of trust.
+output "ds_record" {
+  value = opentelekomcloud_dns_zone_v2.signed_example_com.dnssec_infos[0].ds_record
+}
+```
+
 ### Private Zone Configuration
 
 ```hcl
@@ -104,6 +120,15 @@ The following arguments are supported:
 
 * `value_specs` - (Optional) Map of additional options. Changing this creates a new zone.
 
+* `dnssec` - (Optional) Whether DNSSEC is enabled for a `public` zone. Can either be `ENABLE` or `DISABLE`.
+  Enabling signs the zone; the resulting DS record (see `dnssec_infos`) still has to be published at
+  the domain registrar to complete the chain of trust. When omitted, the current state of the zone is
+  kept as is; removing `dnssec = "ENABLE"` from the configuration does *not* disable DNSSEC.
+
+~> **Warning:** Delete the DS record at the registrar *before* setting `dnssec` to `DISABLE` or
+  destroying the zone. An orphaned DS record makes the zone unresolvable on validating resolvers.
+  The provider emits a warning whenever it disables DNSSEC or deletes a signed zone.
+
 The `router` block supports:
 
 * `router_id` - (Required) The Router(VPC) ID. which VPC network will assicate with.
@@ -129,6 +154,19 @@ The following attributes are exported:
 * `value_specs` - See Argument Reference above.
 
 * `masters` - An array of master DNS servers.
+
+* `dnssec_infos` - DNSSEC key material of a signed public zone. Empty while `dnssec` is `DISABLE`.
+  * `key_tag` - Key tag of the KSK.
+  * `flag` - DNSKEY flags (`257` for a KSK).
+  * `digest_algorithm` - Digest algorithm name (e.g. `SHA256`).
+  * `digest_type` - Digest algorithm number (e.g. `2`).
+  * `digest` - Digest of the KSK.
+  * `signature` - Signing algorithm name (e.g. `ECDSAP256SHA256`).
+  * `signature_type` - Signing algorithm number (e.g. `13`).
+  * `ksk_public_key` - Base64 public key of the KSK.
+  * `ds_record` - Complete DS record to publish at the registrar.
+  * `created_at` - Time DNSSEC was enabled.
+  * `updated_at` - Time the DNSSEC configuration was last updated.
 
 ## Import
 

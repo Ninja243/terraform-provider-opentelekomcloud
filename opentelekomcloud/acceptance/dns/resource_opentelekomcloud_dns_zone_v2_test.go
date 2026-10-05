@@ -303,3 +303,60 @@ resource "opentelekomcloud_dns_zone_v2" "zone_1" {
 }
 `, common.DataSourceSubnet, zoneName)
 }
+
+func TestAccDNSV2Zone_dnssec(t *testing.T) {
+	var (
+		zone     zones.Zone
+		zoneName = fmt.Sprintf("accdnssectest%s.com.", acctest.RandString(5))
+	)
+
+	rc := common.InitResourceCheck(
+		resourceZoneName,
+		&zone,
+		getDnsZoneFunc,
+	)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { common.TestAccPreCheck(t) },
+		ProviderFactories: common.TestAccProviderFactories,
+		CheckDestroy:      rc.CheckResourceDestroy(),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccDNSV2ZoneDNSSEC(zoneName, "ENABLE"),
+				Check: resource.ComposeTestCheckFunc(
+					rc.CheckResourceExists(),
+					resource.TestCheckResourceAttr(resourceZoneName, "dnssec", "ENABLE"),
+					resource.TestCheckResourceAttr(resourceZoneName, "dnssec_infos.#", "1"),
+					resource.TestCheckResourceAttr(resourceZoneName, "dnssec_infos.0.flag", "257"),
+					resource.TestCheckResourceAttrSet(resourceZoneName, "dnssec_infos.0.key_tag"),
+					resource.TestCheckResourceAttrSet(resourceZoneName, "dnssec_infos.0.digest"),
+					resource.TestCheckResourceAttrSet(resourceZoneName, "dnssec_infos.0.ds_record"),
+				),
+			},
+			{
+				ResourceName:      resourceZoneName,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				Config: testAccDNSV2ZoneDNSSEC(zoneName, "DISABLE"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(resourceZoneName, "dnssec", "DISABLE"),
+					resource.TestCheckResourceAttr(resourceZoneName, "dnssec_infos.#", "0"),
+				),
+			},
+		},
+	})
+}
+
+func testAccDNSV2ZoneDNSSEC(zoneName, dnssec string) string {
+	return fmt.Sprintf(`
+resource "opentelekomcloud_dns_zone_v2" "zone_1" {
+  name   = "%s"
+  email  = "email1@example.com"
+  ttl    = 3000
+  type   = "public"
+  dnssec = "%s"
+}
+`, zoneName, dnssec)
+}

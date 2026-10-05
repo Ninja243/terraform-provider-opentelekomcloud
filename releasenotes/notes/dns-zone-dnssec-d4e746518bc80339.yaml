@@ -1,0 +1,5 @@
+---
+enhancements:
+  - |
+    **[DNS]** Add ``dnssec`` argument and ``dnssec_infos`` attribute to ``resource/opentelekomcloud_dns_zone_v2``
+    and ``data_source/opentelekomcloud_dns_zone_v2`` to enable DNSSEC on public zones; the provider warns before disabling DNSSEC or deleting a signed zone (`#PR <https://github.com/opentelekomcloud/terraform-provider-opentelekomcloud/pull/PR>`_)

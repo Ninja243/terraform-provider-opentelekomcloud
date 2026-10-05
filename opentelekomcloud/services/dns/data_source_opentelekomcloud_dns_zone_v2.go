@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	golangsdk "github.com/opentelekomcloud/gophertelekomcloud"
 	"github.com/opentelekomcloud/gophertelekomcloud/openstack/dns/v2/zones"
 
 	"github.com/opentelekomcloud/terraform-provider-opentelekomcloud/opentelekomcloud/common"
@@ -85,6 +86,15 @@ func DataSourceDNSZoneV2() *schema.Resource {
 				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
 			"tags": common.TagsSchema(),
+			"dnssec": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"dnssec_infos": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     dnsZoneDNSSECInfos(),
+			},
 		},
 	}
 }
@@ -112,7 +122,7 @@ func dataSourceDNSZoneV2Read(_ context.Context, d *schema.ResourceData, meta int
 			}
 		}
 
-		return setDNSZoneV2DataSourceAttributes(d, zone)
+		return setDNSZoneV2DataSourceAttributes(d, client, zone)
 	}
 
 	listOpts := zones.ListOpts{}
@@ -176,10 +186,10 @@ func dataSourceDNSZoneV2Read(_ context.Context, d *schema.ResourceData, meta int
 
 	zone := allZones[0]
 
-	return setDNSZoneV2DataSourceAttributes(d, &zone)
+	return setDNSZoneV2DataSourceAttributes(d, client, &zone)
 }
 
-func setDNSZoneV2DataSourceAttributes(d *schema.ResourceData, zone *zones.Zone) diag.Diagnostics {
+func setDNSZoneV2DataSourceAttributes(d *schema.ResourceData, client *golangsdk.ServiceClient, zone *zones.Zone) diag.Diagnostics {
 	log.Printf("[DEBUG] Retrieved DNS Zone %s: %+v", zone.ID, zone)
 	d.SetId(zone.ID)
 
@@ -199,6 +209,10 @@ func setDNSZoneV2DataSourceAttributes(d *schema.ResourceData, zone *zones.Zone) 
 		d.Set("masters", zone.Masters),
 	)
 	if err := mErr.ErrorOrNil(); err != nil {
+		return diag.FromErr(err)
+	}
+
+	if err := setDNSZoneDNSSEC(d, client, zone.ID, zone.ZoneType); err != nil {
 		return diag.FromErr(err)
 	}
 

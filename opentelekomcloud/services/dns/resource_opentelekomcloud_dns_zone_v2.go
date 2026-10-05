@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 
 	"github.com/opentelekomcloud/terraform-provider-opentelekomcloud/opentelekomcloud/common"
 	"github.com/opentelekomcloud/terraform-provider-opentelekomcloud/opentelekomcloud/common/cfg"
@@ -34,6 +35,12 @@ func ResourceDNSZoneV2() *schema.Resource {
 		DeleteContext: resourceDNSZoneV2Delete,
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceDnsZoneV2ImportState,
+		},
+		CustomizeDiff: func(_ context.Context, d *schema.ResourceDiff, _ interface{}) error {
+			if d.HasChange("dnssec") {
+				return d.SetNewComputed("dnssec_infos")
+			}
+			return nil
 		},
 
 		Timeouts: &schema.ResourceTimeout{
@@ -102,8 +109,102 @@ func ResourceDNSZoneV2() *schema.Resource {
 				Optional: true,
 				ForceNew: true,
 			},
+			"dnssec": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				Computed:     true,
+				ValidateFunc: validation.StringInSlice([]string{"ENABLE", "DISABLE"}, false),
+			},
+			"dnssec_infos": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     dnsZoneDNSSECInfos(),
+			},
 		},
 	}
+}
+
+func dnsZoneDNSSECInfos() *schema.Resource {
+	return &schema.Resource{
+		Schema: map[string]*schema.Schema{
+			"key_tag":          {Type: schema.TypeInt, Computed: true},
+			"flag":             {Type: schema.TypeInt, Computed: true},
+			"digest_algorithm": {Type: schema.TypeString, Computed: true},
+			"digest_type":      {Type: schema.TypeInt, Computed: true},
+			"digest":           {Type: schema.TypeString, Computed: true},
+			"signature":        {Type: schema.TypeString, Computed: true},
+			"signature_type":   {Type: schema.TypeInt, Computed: true},
+			"ksk_public_key":   {Type: schema.TypeString, Computed: true},
+			"ds_record":        {Type: schema.TypeString, Computed: true},
+			"created_at":       {Type: schema.TypeString, Computed: true},
+			"updated_at":       {Type: schema.TypeString, Computed: true},
+		},
+	}
+}
+
+func flattenDNSZoneDNSSECInfos(dnssec *zones.DNSSEC) []map[string]interface{} {
+	if dnssec == nil || dnssec.Status != "ENABLE" {
+		return nil
+	}
+	return []map[string]interface{}{{
+		"key_tag":          dnssec.KeyTag,
+		"flag":             dnssec.Flag,
+		"digest_algorithm": dnssec.DigestAlgorithm,
+		"digest_type":      dnssec.DigestType,
+		"digest":           dnssec.Digest,
+		"signature":        dnssec.Signature,
+		"signature_type":   dnssec.SignatureType,
+		"ksk_public_key":   dnssec.KSKPublicKey,
+		"ds_record":        dnssec.DSRecord,
+		"created_at":       dnssec.CreatedAt,
+		"updated_at":       dnssec.UpdatedAt,
+	}}
+}
+
+const dnssecDSWarning = "DNSSEC of OpenTelekomCloud DNS zone %s is enabled. If a DS record for it is still published " +
+	"at the domain registrar, validating resolvers will fail to resolve the zone once it is %s. " +
+	"Remove the DS record at the registrar first and wait for the parent zone TTL to expire."
+
+// setDNSZoneDNSSEC reads the DNSSEC state of a public zone into `dnssec` and `dnssec_infos`.
+// Only a 404 (feature not available) yields empty attributes; other errors are returned, because
+// `dnssec_infos` may feed a registrar DS record and must never silently turn empty.
+func setDNSZoneDNSSEC(d *schema.ResourceData, client *golangsdk.ServiceClient, zoneID, zoneType string) error {
+	if zoneType != "public" {
+		return nil
+	}
+	dnssec, err := zones.GetDNSSEC(client, zoneID)
+	if err != nil {
+		if _, ok := err.(golangsdk.ErrDefault404); ok {
+			log.Printf("[WARN] DNSSEC not available for OpenTelekomCloud DNS zone %s: %s", zoneID, err)
+			return multierror.Append(d.Set("dnssec", nil), d.Set("dnssec_infos", nil)).ErrorOrNil()
+		}
+		return fmt.Errorf("error fetching DNSSEC of OpenTelekomCloud DNS zone %s: %s", zoneID, logHttpError(err))
+	}
+	return multierror.Append(
+		d.Set("dnssec", dnssec.Status),
+		d.Set("dnssec_infos", flattenDNSZoneDNSSECInfos(dnssec)),
+	).ErrorOrNil()
+}
+
+// updateDNSZoneDNSSEC is idempotent: a zone already in the requested status is left alone,
+// so a re-applied ENABLE never re-keys a zone whose DS record is published.
+func updateDNSZoneDNSSEC(client *golangsdk.ServiceClient, zoneID, status string) error {
+	current, err := zones.GetDNSSEC(client, zoneID)
+	if err != nil {
+		return fmt.Errorf("error fetching DNSSEC of OpenTelekomCloud DNS zone %s: %s", zoneID, logHttpError(err))
+	}
+	if current.Status == status {
+		return nil
+	}
+	if status == "ENABLE" {
+		_, err = zones.EnableDNSSEC(client, zoneID)
+	} else {
+		_, err = zones.DisableDNSSEC(client, zoneID)
+	}
+	if err != nil {
+		return fmt.Errorf("error setting DNSSEC of OpenTelekomCloud DNS zone %s to %s: %s", zoneID, status, logHttpError(err))
+	}
+	return nil
 }
 
 func resourceDNSRouter(d *schema.ResourceData) map[string]string {
@@ -143,6 +244,9 @@ func resourceDNSZoneV2Create(ctx context.Context, d *schema.ResourceData, meta i
 	if zone_type == "private" {
 		if len(router) < 1 {
 			return fmterr.Errorf("the argument (router) is required when creating OpenTelekomCloud DNS private zone")
+		}
+		if d.Get("dnssec").(string) == "ENABLE" {
+			return fmterr.Errorf("the argument (dnssec) is only supported for OpenTelekomCloud DNS public zones")
 		}
 	}
 	vs := common.MapResourceProp(d, "value_specs")
@@ -224,6 +328,12 @@ func resourceDNSZoneV2Create(ctx context.Context, d *schema.ResourceData, meta i
 
 	d.SetId(n.ID)
 
+	if d.Get("dnssec").(string) == "ENABLE" {
+		if err := updateDNSZoneDNSSEC(client, n.ID, "ENABLE"); err != nil {
+			return diag.FromErr(err)
+		}
+	}
+
 	// set tags
 	tagRaw := d.Get("tags").(map[string]interface{})
 	if len(tagRaw) > 0 {
@@ -272,6 +382,10 @@ func resourceDNSZoneV2Read(ctx context.Context, d *schema.ResourceData, meta int
 	}
 	if err = d.Set("masters", n.Masters); err != nil {
 		return fmterr.Errorf("[DEBUG] Error saving masters to state for OpenTelekomCloud DNS zone (%s): %s", d.Id(), err)
+	}
+
+	if err := setDNSZoneDNSSEC(d, client, d.Id(), n.ZoneType); err != nil {
+		return diag.FromErr(err)
 	}
 
 	// save tags
@@ -342,6 +456,20 @@ func resourceDNSZoneV2Update(ctx context.Context, d *schema.ResourceData, meta i
 	_, err = stateConf.WaitForStateContext(ctx)
 	if err != nil {
 		return fmterr.Errorf("error waiting for DNS zone to be active: %w", err)
+	}
+
+	var diags diag.Diagnostics
+	if d.HasChange("dnssec") {
+		status := d.Get("dnssec").(string)
+		if status == "DISABLE" {
+			diags = append(diags, diag.Diagnostic{
+				Severity: diag.Warning,
+				Summary:  fmt.Sprintf(dnssecDSWarning, d.Id(), "disabled"),
+			})
+		}
+		if err := updateDNSZoneDNSSEC(client, d.Id(), status); err != nil {
+			return append(diags, diag.FromErr(err)...)
+		}
 	}
 
 	if d.HasChange("router") {
@@ -417,7 +545,7 @@ func resourceDNSZoneV2Update(ctx context.Context, d *schema.ResourceData, meta i
 	}
 
 	clientCtx := common.CtxWithClient(ctx, client, keyClientV2)
-	return resourceDNSZoneV2Read(clientCtx, d, meta)
+	return append(diags, resourceDNSZoneV2Read(clientCtx, d, meta)...)
 }
 
 func resourceDNSZoneV2Delete(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
@@ -433,9 +561,17 @@ func resourceDNSZoneV2Delete(ctx context.Context, d *schema.ResourceData, meta i
 	// Dirty hack for nl region without it impossible to create public zone
 	nlClientOverride(d, region, client)
 
+	var diags diag.Diagnostics
+	if d.Get("dnssec").(string) == "ENABLE" {
+		diags = append(diags, diag.Diagnostic{
+			Severity: diag.Warning,
+			Summary:  fmt.Sprintf(dnssecDSWarning, d.Id(), "deleted"),
+		})
+	}
+
 	_, err = zones.Delete(client, d.Id()).Extract()
 	if err != nil {
-		return fmterr.Errorf("error deleting OpenTelekomCloud DNS Zone: %s", err)
+		return append(diags, fmterr.Errorf("error deleting OpenTelekomCloud DNS Zone: %s", err)...)
 	}
 
 	log.Printf("[DEBUG] Waiting for DNS Zone (%s) to become available", d.Id())
@@ -452,13 +588,13 @@ func resourceDNSZoneV2Delete(ctx context.Context, d *schema.ResourceData, meta i
 
 	_, err = stateConf.WaitForStateContext(ctx)
 	if err != nil {
-		return fmterr.Errorf(
+		return append(diags, fmterr.Errorf(
 			"Error waiting for DNS Zone (%s) to delete: %s",
-			d.Id(), err)
+			d.Id(), err)...)
 	}
 
 	d.SetId("")
-	return nil
+	return diags
 }
 
 func nlClientOverride(d *schema.ResourceData, region string, client *golangsdk.ServiceClient) {
